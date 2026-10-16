@@ -25,8 +25,7 @@ class FruitTodoApp extends StatelessWidget {
         ),
         useMaterial3: true,
       ),
-      home: const WelcomeScreen(),
-    );
+      home: const WelcomeScreeTextStyle    );
   }
 }
 
@@ -322,7 +321,7 @@ class _HomeScreenState extends State<HomeScreen> {
                           mainAxisAlignment: MainAxisAlignment.center,
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            Text(fruit.title,
+                                 Text(fruit.name,
                                 style: const TextStyle(
                                     fontWeight: FontWeight.bold, fontSize: 16)),
                             Text('${fruit.minutes} دقيقة',
