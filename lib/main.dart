@@ -25,7 +25,7 @@ class FruitTodoApp extends StatelessWidget {
         ),
         useMaterial3: true,
       ),
-      home: const WelcomeScreeTextStyle    );
+            home: const WelcomeScreen(),      );
   }
 }
 
