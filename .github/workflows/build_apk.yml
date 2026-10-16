@@ -32,7 +32,7 @@ jobs:
         run: |
           flutter create . --org com.fruit.todo --project-name fruit_todo_app --platforms=android
 
-      - name: Inject pubspec.yaml
+      - name: Fix pubspec.yaml Dependencies
         run: |
           cat << 'EOF' > pubspec.yaml
           name: fruit_todo_app
@@ -50,7 +50,7 @@ jobs:
               sdk: flutter
             hive: ^2.2.3
             hive_flutter: ^1.1.0
-            intl: ^0.19.0
+            intl: ^0.18.1
 
           dev_dependencies:
             flutter_test:
