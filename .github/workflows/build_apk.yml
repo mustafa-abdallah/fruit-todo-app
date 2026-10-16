@@ -32,6 +32,12 @@ jobs:
         run: |
           flutter create . --org com.fruit.todo --project-name fruit_todo_app --platforms=android
 
+      - name: Clean Project
+        run: flutter clean
+
+      - name: Get Dependencies
+        run: flutter pub get
+
       - name: Build APK
         run: flutter build apk --release
 
