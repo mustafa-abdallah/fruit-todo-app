@@ -28,8 +28,9 @@ jobs:
           flutter-version: '3.19.6'
           channel: 'stable'
 
-      - name: Install Dependencies
-        run: flutter pub get
+      - name: Create Clean Flutter Project Structure
+        run: |
+          flutter create . --org com.fruit.todo --project-name fruit_todo_app --platforms=android
 
       - name: Build APK
         run: flutter build apk --release
