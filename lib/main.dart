@@ -1,529 +1,1579 @@
 import 'dart:async';
-import 'package:flutter/material.dart';
+import 'dart:convert';
+import 'dart:math' as math;
 
-void main() {
-  runApp(const FruitTodoApp());
+import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+
+// ============================================================
+// الفواكه
+// ============================================================
+class Fruit {
+  final String name;
+  final String icon;
+  final int minutes;
+  final Color color;
+  const Fruit(this.name, this.icon, this.minutes, this.color);
 }
 
-class FruitTodoApp extends StatelessWidget {
-  const FruitTodoApp({super.key});
+// الترتيب هنا من اليمين لليسار (نفس ترتيب الصورة)
+const List<Fruit> kFruits = [
+  Fruit('زيتونة', '🫒', 5, Color(0xFF9CCC65)),
+  Fruit('ليمونة', '🍋', 10, Color(0xFFFDD835)),
+  Fruit('خيار', '🥒', 15, Color(0xFF66BB6A)),
+  Fruit('فلفل', '🫑', 20, Color(0xFFFFCA28)),
+  Fruit('طماطم', '🍅', 25, Color(0xFFEF5350)),
+  Fruit('جزر', '🥕', 30, Color(0xFFFF8A3D)),
+  Fruit('أفوكادو', '🥑', 40, Color(0xFFA1887F)),
+  Fruit('شمندر', '🍠', 50, Color(0xFFCE6FA5)),
+  Fruit('كرنب', '🥬', 60, Color(0xFF7CB342)),
+];
 
-  @override
-  Widget build(BuildContext context) {
-    return MaterialApp(
-      title: 'فروت بومودورو',
-      debugShowCheckedModeBanner: false,
-      theme: ThemeData(
-        brightness: Brightness.dark,
-        scaffoldBackgroundColor: const Color(0xff000000),
-        colorScheme: const ColorScheme.dark(
-          primary: Color(0xff26C6DA),
-          secondary: Color(0xff1E1E1E),
-          surface: Color(0xff1E1E1E),
-          onPrimary: Colors.black,
-          onSurface: Colors.white,
-        ),
-        useMaterial3: true,
-      ),
-            home: const WelcomeScreen(),      );
+// ============================================================
+// النماذج
+// ============================================================
+class Session {
+  final String fruitName;
+  final String fruitIcon;
+  final int minutes;
+  String project; // فاضي = بدون نشاط
+  final DateTime endedAt;
+
+  Session({
+    required this.fruitName,
+    required this.fruitIcon,
+    required this.minutes,
+    required this.project,
+    required this.endedAt,
+  });
+
+  Map<String, dynamic> toJson() => {
+        'fn': fruitName,
+        'fi': fruitIcon,
+        'm': minutes,
+        'p': project,
+        't': endedAt.millisecondsSinceEpoch,
+      };
+
+  factory Session.fromJson(Map<String, dynamic> j) => Session(
+        fruitName: j['fn'] as String,
+        fruitIcon: j['fi'] as String,
+        minutes: j['m'] as int,
+        project: j['p'] as String,
+        endedAt: DateTime.fromMillisecondsSinceEpoch(j['t'] as int),
+      );
+}
+
+class TaskItem {
+  String title;
+  bool done;
+  TaskItem({required this.title, this.done = false});
+
+  Map<String, dynamic> toJson() => {'t': title, 'd': done};
+
+  factory TaskItem.fromJson(Map<String, dynamic> j) =>
+      TaskItem(title: j['t'] as String, done: j['d'] as bool);
+}
+
+// ============================================================
+// حالة التطبيق + الحفظ
+// ============================================================
+class AppState extends ChangeNotifier {
+  List<Session> sessions = [];
+  List<String> projects = ['عام'];
+  List<TaskItem> tasks = [];
+  String? currentProject;
+
+  int themeMode = 2; // 0 تلقائي، 1 نهاري، 2 ليلي
+  double fontScale = 1.0;
+  int starMinutes = 60;
+  bool vibration = true;
+  bool sound = true;
+
+  SharedPreferences? _prefs;
+
+  Future<void> load() async {
+    final p = await SharedPreferences.getInstance();
+    _prefs = p;
+    try {
+      final s = p.getString('sessions');
+      if (s != null) {
+        sessions = (jsonDecode(s) as List)
+            .map((e) => Session.fromJson(Map<String, dynamic>.from(e as Map)))
+            .toList();
+      }
+      final t = p.getString('tasks');
+      if (t != null) {
+        tasks = (jsonDecode(t) as List)
+            .map((e) => TaskItem.fromJson(Map<String, dynamic>.from(e as Map)))
+            .toList();
+      }
+    } catch (_) {
+      // بيانات تالفة: نكمل بقوائم فاضية
+    }
+    projects = p.getStringList('projects') ?? ['عام'];
+    currentProject = p.getString('currentProject');
+    themeMode = p.getInt('themeMode') ?? 2;
+    fontScale = p.getDouble('fontScale') ?? 1.0;
+    starMinutes = p.getInt('starMinutes') ?? 60;
+    vibration = p.getBool('vibration') ?? true;
+    sound = p.getBool('sound') ?? true;
+  }
+
+  void _save() {
+    final p = _prefs;
+    if (p == null) return;
+    p.setString('sessions', jsonEncode(sessions.map((e) => e.toJson()).toList()));
+    p.setString('tasks', jsonEncode(tasks.map((e) => e.toJson()).toList()));
+    p.setStringList('projects', projects);
+    if (currentProject == null) {
+      p.remove('currentProject');
+    } else {
+      p.setString('currentProject', currentProject!);
+    }
+    p.setInt('themeMode', themeMode);
+    p.setDouble('fontScale', fontScale);
+    p.setInt('starMinutes', starMinutes);
+    p.setBool('vibration', vibration);
+    p.setBool('sound', sound);
+  }
+
+  void _changed() {
+    _save();
+    notifyListeners();
+  }
+
+  // ---------- الجلسات ----------
+  void addSession(Session s) {
+    sessions.add(s);
+    _changed();
+  }
+
+  void removeSession(Session s) {
+    sessions.remove(s);
+    _changed();
+  }
+
+  int minutesOnDay(DateTime d) {
+    final k = dayOf(d);
+    int total = 0;
+    for (final s in sessions) {
+      if (dayOf(s.endedAt) == k) total += s.minutes;
+    }
+    return total;
+  }
+
+  List<Session> sessionsOnDay(DateTime d) {
+    final k = dayOf(d);
+    return sessions.where((s) => dayOf(s.endedAt) == k).toList();
+  }
+
+  Map<String, int> projectTotals(DateTime from, DateTime to) {
+    final map = <String, int>{};
+    for (final s in sessions) {
+      if (!s.endedAt.isBefore(from) && s.endedAt.isBefore(to)) {
+        map[s.project] = (map[s.project] ?? 0) + s.minutes;
+      }
+    }
+    return map;
+  }
+
+  int projectTotal(String name) {
+    int total = 0;
+    for (final s in sessions) {
+      if (s.project == name) total += s.minutes;
+    }
+    return total;
+  }
+
+  int starsFor(int minutes) {
+    final s = minutes ~/ starMinutes;
+    return s > 3 ? 3 : s;
+  }
+
+  // ---------- المشاريع ----------
+  bool addProject(String name) {
+    final n = name.trim();
+    if (n.isEmpty || projects.contains(n)) return false;
+    projects.add(n);
+    _changed();
+    return true;
+  }
+
+  void renameProject(String old, String neu) {
+    final n = neu.trim();
+    final i = projects.indexOf(old);
+    if (i < 0 || n.isEmpty || projects.contains(n)) return;
+    projects[i] = n;
+    for (final s in sessions) {
+      if (s.project == old) s.project = n;
+    }
+    if (currentProject == old) currentProject = n;
+    _changed();
+  }
+
+  void deleteProject(String name) {
+    projects.remove(name);
+    if (currentProject == name) currentProject = null;
+    _changed();
+  }
+
+  void selectProject(String? name) {
+    currentProject = name;
+    _changed();
+  }
+
+  // ---------- المهام ----------
+  void addTask(String title) {
+    tasks.add(TaskItem(title: title.trim()));
+    _changed();
+  }
+
+  void toggleTask(TaskItem t, bool value) {
+    t.done = value;
+    _changed();
+  }
+
+  void removeTask(TaskItem t) {
+    tasks.remove(t);
+    _changed();
+  }
+
+  // ---------- الإعدادات ----------
+  void setTheme(int v) {
+    themeMode = v;
+    _changed();
+  }
+
+  void setFontScale(double v) {
+    fontScale = v;
+    _changed();
+  }
+
+  void setStarMinutes(int v) {
+    starMinutes = v;
+    _changed();
+  }
+
+  void setVibration(bool v) {
+    vibration = v;
+    _changed();
+  }
+
+  void setSound(bool v) {
+    sound = v;
+    _changed();
+  }
+
+  void clearAll() {
+    sessions = [];
+    tasks = [];
+    projects = ['عام'];
+    currentProject = null;
+    _changed();
   }
 }
 
-// 1. شاشة الترحيب
-class WelcomeScreen extends StatelessWidget {
-  const WelcomeScreen({super.key});
+final AppState app = AppState();
+
+// ============================================================
+// أدوات مساعدة
+// ============================================================
+DateTime dayOf(DateTime d) => DateTime(d.year, d.month, d.day);
+
+const List<String> _dayNames = [
+  'الاثنين',
+  'الثلاثاء',
+  'الأربعاء',
+  'الخميس',
+  'الجمعة',
+  'السبت',
+  'الأحد',
+];
+
+const List<String> _monthNames = [
+  'يناير',
+  'فبراير',
+  'مارس',
+  'أبريل',
+  'مايو',
+  'يونيو',
+  'يوليو',
+  'أغسطس',
+  'سبتمبر',
+  'أكتوبر',
+  'نوفمبر',
+  'ديسمبر',
+];
+
+String arDate(DateTime d) =>
+    '${_dayNames[d.weekday - 1]}، ${d.day} ${_monthNames[d.month - 1]} ${d.year}';
+
+String hm(DateTime d) {
+  final h = d.hour.toString().padLeft(2, '0');
+  final m = d.minute.toString().padLeft(2, '0');
+  return '$h:$m';
+}
+
+String fmtMinutes(int m) {
+  if (m < 60) return '$m د';
+  return '${m ~/ 60} س ${m % 60} د';
+}
+
+String projName(String p) => p.isEmpty ? 'بدون نشاط' : p;
+
+Color cardColor(BuildContext c) => Theme.of(c).brightness == Brightness.dark
+    ? const Color(0xFF363A48)
+    : Colors.white;
+
+Color subtle(BuildContext c) =>
+    Theme.of(c).brightness == Brightness.dark ? Colors.white60 : Colors.black54;
+
+Color trackColor(BuildContext c) => Theme.of(c).brightness == Brightness.dark
+    ? const Color(0xFF1F222C)
+    : const Color(0xFFD9DDE3);
+
+Color accentOf(BuildContext c) => Theme.of(c).colorScheme.primary;
+
+Future<bool> confirmDialog(BuildContext context, String title, String message,
+    {String ok = 'تأكيد'}) async {
+  final r = await showDialog<bool>(
+    context: context,
+    builder: (ctx) => AlertDialog(
+      title: Text(title),
+      content: Text(message),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(ctx, false),
+          child: const Text('إلغاء'),
+        ),
+        TextButton(
+          onPressed: () => Navigator.pop(ctx, true),
+          child: Text(ok),
+        ),
+      ],
+    ),
+  );
+  return r == true;
+}
+
+// نافذة إدخال نص تظهر فوق الكيبورد (الحقل يفضل ظاهر)
+Future<String?> askText(BuildContext context, String title,
+    {String initial = '', String hint = ''}) {
+  return showModalBottomSheet<String>(
+    context: context,
+    isScrollControlled: true,
+    builder: (ctx) => _TextSheet(title: title, initial: initial, hint: hint),
+  );
+}
+
+class _TextSheet extends StatefulWidget {
+  final String title;
+  final String initial;
+  final String hint;
+  const _TextSheet(
+      {required this.title, required this.initial, required this.hint});
+
+  @override
+  State<_TextSheet> createState() => _TextSheetState();
+}
+
+class _TextSheetState extends State<_TextSheet> {
+  late final TextEditingController _c =
+      TextEditingController(text: widget.initial);
+
+  @override
+  void dispose() {
+    _c.dispose();
+    super.dispose();
+  }
+
+  void _submit() {
+    final t = _c.text.trim();
+    if (t.isNotEmpty) Navigator.pop(context, t);
+  }
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      body: Center(
-        child: Padding(
-          padding: const EdgeInsets.all(24.0),
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              const Icon(
-                Icons.timer_outlined,
-                size: 80,
-                color: Color(0xff26C6DA),
+    return Padding(
+      padding: EdgeInsets.only(bottom: MediaQuery.of(context).viewInsets.bottom),
+      child: Padding(
+        padding: const EdgeInsets.all(20),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Text(widget.title,
+                style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+            const SizedBox(height: 14),
+            TextField(
+              controller: _c,
+              autofocus: true,
+              textInputAction: TextInputAction.done,
+              onSubmitted: (_) => _submit(),
+              decoration: InputDecoration(
+                hintText: widget.hint,
+                border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
               ),
-              const SizedBox(height: 30),
-              const Text(
-                '🫒 فروت بومودورو والمهام',
-                style: TextStyle(
-                  fontSize: 24,
-                  fontWeight: FontWeight.bold,
-                  color: Colors.white,
-                ),
-                textAlign: TextAlign.center,
-              ),
-              const SizedBox(height: 15),
-              const Text(
-                'نظم مهامك واجمع فواكه الإنتاجية بتصميم داكن مريح للعين.',
-                style: TextStyle(
-                  fontSize: 16,
-                  color: Colors.grey,
-                ),
-                textAlign: TextAlign.center,
-              ),
-              const SizedBox(height: 50),
-              ElevatedButton(
-                onPressed: () {
-                  Navigator.pushReplacement(
-                    context,
-                    MaterialPageRoute(builder: (context) => const HomeScreen()),
-                  );
-                },
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: const Color(0xff1E1E1E),
-                  foregroundColor: const Color(0xff26C6DA),
-                  padding: const EdgeInsets.symmetric(horizontal: 40, vertical: 15),
-                  shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(10),
-                    side: const BorderSide(color: Color(0xff26C6DA), width: 1),
-                  ),
-                ),
-                child: const Text(
-                  'ابدأ الآن',
-                  style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
-                ),
-              ),
-            ],
-          ),
+            ),
+            const SizedBox(height: 14),
+            FilledButton(onPressed: _submit, child: const Text('حفظ')),
+          ],
         ),
       ),
     );
   }
 }
 
-// نموذج المهمة
-class TaskItem {
-  String title;
-  bool isDone;
-  TaskItem({required this.title, this.isDone = false});
+// ============================================================
+// التطبيق
+// ============================================================
+Future<void> main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  await app.load();
+  runApp(const FruitApp());
 }
 
-// نموذج الفواكه
-class FruitModel {
-  final String name;
-  final int minutes;
-  final String icon;
-  FruitModel({required this.name, required this.minutes, required this.icon});
+ThemeData buildTheme(Brightness b) {
+  final dark = b == Brightness.dark;
+  final accent = dark ? const Color(0xFF1DE9B6) : const Color(0xFF00897B);
+  return ThemeData(
+    useMaterial3: true,
+    brightness: b,
+    scaffoldBackgroundColor:
+        dark ? const Color(0xFF2B2E3A) : const Color(0xFFF2F4F7),
+    colorScheme: ColorScheme.fromSeed(
+      seedColor: const Color(0xFF00A99D),
+      brightness: b,
+    ).copyWith(primary: accent),
+    appBarTheme: AppBarTheme(
+      backgroundColor: dark ? const Color(0xFF1F222C) : Colors.white,
+      foregroundColor: accent,
+      centerTitle: true,
+      elevation: 0,
+      titleTextStyle: TextStyle(
+        color: accent,
+        fontSize: 20,
+        fontWeight: FontWeight.w600,
+      ),
+    ),
+    drawerTheme: DrawerThemeData(
+      backgroundColor: dark ? const Color(0xFF2B2E3A) : Colors.white,
+    ),
+  );
 }
 
-// 2. الشاشة الرئيسية واللوحة المتكاملة
-class HomeScreen extends StatefulWidget {
+class FruitApp extends StatelessWidget {
+  const FruitApp({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return ListenableBuilder(
+      listenable: app,
+      builder: (context, _) {
+        return MaterialApp(
+          title: 'فروت بومودورو',
+          debugShowCheckedModeBanner: false,
+          theme: buildTheme(Brightness.light),
+          darkTheme: buildTheme(Brightness.dark),
+          themeMode: ThemeMode.values[app.themeMode],
+          builder: (context, child) {
+            return MediaQuery(
+              data: MediaQuery.of(context)
+                  .copyWith(textScaler: TextScaler.linear(app.fontScale)),
+              child: Directionality(
+                textDirection: TextDirection.rtl,
+                child: child!,
+              ),
+            );
+          },
+          home: const HomeScreen(),
+        );
+      },
+    );
+  }
+}
+
+// ============================================================
+// الشاشة الرئيسية
+// ============================================================
+class HomeScreen extends StatelessWidget {
   const HomeScreen({super.key});
 
   @override
-  State<HomeScreen> createState() => _HomeScreenState();
-}
-
-class _HomeScreenState extends State<HomeScreen> {
-  int _currentIndex = 0;
-
-  final List<TaskItem> _tasks = [
-    TaskItem(title: 'مراجعة أكواد البرمجة', isDone: false),
-    TaskItem(title: 'قراءة كتاب تقني لمدة 20 دقيقة', isDone: true),
-  ];
-
-  final TextEditingController _taskController = TextEditingController();
-
-  // قائمة الفواكه ومقاديرها الزمنية
-  final List<FruitModel> _fruits = [
-    FruitModel(name: 'زيتونة', minutes: 5, icon: '🫒'),
-    FruitModel(name: 'فراولة', minutes: 10, icon: '🍓'),
-    FruitModel(name: 'عنب', minutes: 15, icon: '🍇'),
-    FruitModel(name: 'برتقال', minutes: 20, icon: '🍊'),
-    FruitModel(name: 'تفاحة', minutes: 25, icon: '🍎'),
-    FruitModel(name: 'موز', minutes: 30, icon: '🍌'),
-    FruitModel(name: 'مانجو', minutes: 40, icon: '🥭'),
-    FruitModel(name: 'بطيخ', minutes: 50, icon: '🍉'),
-  ];
-
-  int totalMinutesHarvested = 0;
-  final List<String> harvestedBasket = [];
-
-  void _addNewTask() {
-    if (_taskController.text.isNotEmpty) {
-      setState(() {
-        _tasks.add(TaskItem(title: _taskController.text));
-        _taskController.clear();
-      });
-      Navigator.pop(context);
-    }
-  }
-
-  @override
   Widget build(BuildContext context) {
-    final List<Widget> screens = [
-      _buildDashboardTab(),
-      _buildTimerTab(),
-      _buildStatsTab(),
-    ];
+    return ListenableBuilder(
+      listenable: app,
+      builder: (context, _) {
+        final today = app.minutesOnDay(DateTime.now());
+        final stars = app.starsFor(today);
+        final goal = app.starMinutes * 3;
+        final progress = (today / goal).clamp(0.0, 1.0).toDouble();
+        final accent = accentOf(context);
+        final dark = Theme.of(context).brightness == Brightness.dark;
 
-    return Scaffold(
-      appBar: AppBar(
-        title: Text(_currentIndex == 0
-            ? 'المهام اليومية'
-            : _currentIndex == 1
-                ? 'مؤقت الفواكه'
-                : 'سلة الحصاد والإحصائيات'),
-        backgroundColor: const Color(0xff1E1E1E),
-        centerTitle: true,
-      ),
-      body: screens[_currentIndex],
-      bottomNavigationBar: BottomNavigationBar(
-        currentIndex: _currentIndex,
-        backgroundColor: const Color(0xff1E1E1E),
-        selectedItemColor: const Color(0xff26C6DA),
-        unselectedItemColor: Colors.grey,
-        onTap: (index) {
-          setState(() {
-            _currentIndex = index;
-          });
-        },
-        items: const [
-          BottomNavigationBarItem(icon: Icon(Icons.checklist), label: 'المهام'),
-          BottomNavigationBarItem(icon: Icon(Icons.timer), label: 'المؤقت'),
-          BottomNavigationBarItem(icon: Icon(Icons.bar_chart), label: 'الحصاد'),
-        ],
-      ),
-      floatingActionButton: _currentIndex == 0
-          ? FloatingActionButton(
-              backgroundColor: const Color(0xff26C6DA),
-              child: const Icon(Icons.add, color: Colors.black),
-              onPressed: () {
-                showModalBottomSheet(
-                  context: context,
-                  backgroundColor: const Color(0xff1E1E1E),
-                  builder: (context) => Padding(
-                    padding: const EdgeInsets.all(20.0),
-                    child: Column(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        const Text('إضافة مهمة جديدة',
+        return Scaffold(
+          appBar: AppBar(title: Text(arDate(DateTime.now()))),
+          drawer: const AppDrawer(),
+          body: Column(
+            children: [
+              Expanded(
+                child: GridView.count(
+                  crossAxisCount: 3,
+                  childAspectRatio: 0.95,
+                  padding: const EdgeInsets.all(12),
+                  children: kFruits.map((f) {
+                    return InkWell(
+                      borderRadius: BorderRadius.circular(16),
+                      onTap: () {
+                        Navigator.push(
+                          context,
+                          MaterialPageRoute(
+                            builder: (_) => TimerScreen(fruit: f),
+                          ),
+                        );
+                      },
+                      child: Column(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          Text(f.icon, style: const TextStyle(fontSize: 54)),
+                          const SizedBox(height: 4),
+                          Text(
+                            '${f.minutes}',
                             style: TextStyle(
-                                fontSize: 18, fontWeight: FontWeight.bold)),
-                        const SizedBox(height: 15),
-                        TextField(
-                          controller: _taskController,
-                          decoration: InputDecoration(
-                            hintText: 'اكتب اسم المهمة...',
-                            filled: true,
-                            fillColor: Colors.black,
-                            border: OutlineInputBorder(
-                              borderRadius: BorderRadius.circular(10),
+                              fontSize: 30,
+                              color: f.color,
+                              fontWeight: FontWeight.w500,
                             ),
                           ),
-                        ),
-                        const SizedBox(height: 15),
-                        ElevatedButton(
-                          onPressed: _addNewTask,
-                          style: ElevatedButton.styleFrom(
-                              backgroundColor: const Color(0xff26C6DA),
-                              foregroundColor: Colors.black),
-                          child: const Text('حفظ المهمة'),
-                        ),
-                      ],
-                    ),
-                  ),
-                );
-              },
-            )
-          : null,
-    );
-  }
-
-  // تبويب المهام
-  Widget _buildDashboardTab() {
-    return ListView.builder(
-      padding: const EdgeInsets.all(16),
-      itemCount: _tasks.length,
-      itemBuilder: (context, index) {
-        final task = _tasks[index];
-        return Container(
-          margin: const EdgeInsets.only(bottom: 12),
-          decoration: BoxDecoration(
-            color: const Color(0xff1E1E1E),
-            borderRadius: BorderRadius.circular(12),
-          ),
-          child: CheckboxListTile(
-            title: Text(
-              task.title,
-              style: TextStyle(
-                color: task.isDone ? Colors.grey : Colors.white,
-                decoration: task.isDone ? TextDecoration.lineThrough : null,
+                        ],
+                      ),
+                    );
+                  }).toList(),
+                ),
               ),
-            ),
-            value: task.isDone,
-            activeColor: const Color(0xff26C6DA),
-            onChanged: (val) {
-              setState(() {
-                task.isDone = val ?? false;
-              });
-            },
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.fromLTRB(16, 14, 16, 18),
+                color: dark ? const Color(0xFF23262F) : Colors.white,
+                child: SafeArea(
+                  top: false,
+                  child: Column(
+                    children: [
+                      Row(
+                        children: [
+                          const Text('🥗', style: TextStyle(fontSize: 40)),
+                          const SizedBox(width: 10),
+                          Expanded(
+                            child: Text(
+                              'إنجاز اليوم: $today دقيقة',
+                              style: TextStyle(
+                                fontSize: 18,
+                                color: accent,
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                          ),
+                          Row(
+                            children: List.generate(3, (i) {
+                              return Icon(
+                                i < stars ? Icons.star : Icons.star_border,
+                                color: Colors.amber,
+                                size: 30,
+                              );
+                            }),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 12),
+                      ClipRRect(
+                        borderRadius: BorderRadius.circular(10),
+                        child: LinearProgressIndicator(
+                          value: progress,
+                          minHeight: 16,
+                          backgroundColor: trackColor(context),
+                          color: accent,
+                        ),
+                      ),
+                      const SizedBox(height: 8),
+                      Text(
+                        'كل ${app.starMinutes} دقيقة = نجمة (الحد الأقصى 3 نجوم)',
+                        style: TextStyle(color: subtle(context), fontSize: 13),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ],
           ),
         );
       },
     );
   }
-
-  // تبويب مؤقت الفواكه
-  Widget _buildTimerTab() {
-    return Padding(
-      padding: const EdgeInsets.all(16.0),
-      child: Column(
-        children: [
-          const Text('اختر فاكهة التركيز:',
-              style: TextStyle(fontSize: 18, color: Colors.grey)),
-          const SizedBox(height: 15),
-          Expanded(
-            child: GridView.builder(
-              gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-                crossAxisCount: 2,
-                childAspectRatio: 2.2,
-                crossAxisSpacing: 10,
-                mainAxisSpacing: 10,
-              ),
-              itemCount: _fruits.length,
-              itemBuilder: (context, index) {
-                final fruit = _fruits[index];
-                return InkWell(
-                  onTap: () {
-                    Navigator.push(
-                      context,
-                      MaterialPageRoute(
-                        builder: (context) => ActiveTimerScreen(
-                          fruit: fruit,
-                          onFinished: (mins) {
-                            setState(() {
-                              totalMinutesHarvested += mins;
-                              harvestedBasket.add(fruit.icon);
-                            });
-                          },
-                        ),
-                      ),
-                    );
-                  },
-                  child: Container(
-                    decoration: BoxDecoration(
-                      color: const Color(0xff1E1E1E),
-                      borderRadius: BorderRadius.circular(12),
-                      border: Border.all(color: Colors.grey.shade800),
-                    ),
-                    padding: const EdgeInsets.symmetric(horizontal: 12),
-                    child: Row(
-                      children: [
-                        Text(fruit.icon, style: const TextStyle(fontSize: 28)),
-                        const SizedBox(width: 10),
-                        Column(
-                          mainAxisAlignment: MainAxisAlignment.center,
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                                 Text(fruit.name,
-                                style: const TextStyle(
-                                    fontWeight: FontWeight.bold, fontSize: 16)),
-                            Text('${fruit.minutes} دقيقة',
-                                style: const TextStyle(
-                                    color: Color(0xff26C6DA), fontSize: 12)),
-                          ],
-                        ),
-                      ],
-                    ),
-                  ),
-                );
-              },
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  // تبويب الإحصائيات والحصاد
-  Widget _buildStatsTab() {
-    return Padding(
-      padding: const EdgeInsets.all(20.0),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Container(
-            width: double.infinity,
-            padding: const EdgeInsets.all(20),
-            decoration: BoxDecoration(
-              color: const Color(0xff1E1E1E),
-              borderRadius: BorderRadius.circular(16),
-            ),
-            child: Column(
-              children: [
-                const Text('إجمالي وقت التركيز اليوم',
-                    style: TextStyle(color: Colors.grey, fontSize: 16)),
-                const SizedBox(height: 10),
-                Text('$totalMinutesHarvested دقيقة',
-                    style: const TextStyle(
-                        fontSize: 32,
-                        fontWeight: FontWeight.bold,
-                        color: Color(0xff26C6DA))),
-              ],
-            ),
-          ),
-          const SizedBox(height: 25),
-          const Text('سلة الفواكه المحصودة اليوم:',
-              style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
-          const SizedBox(height: 15),
-          Expanded(
-            child: harvestedBasket.isEmpty
-                ? const Center(
-                    child: Text('لم تجمع أي فواكه اليوم بعد، ابدأ جلسة تركيز!',
-                        style: TextStyle(color: Colors.grey)))
-                : Wrap(
-                    spacing: 10,
-                    runSpacing: 10,
-                    children: harvestedBasket
-                        .map((icon) => Chip(
-                              backgroundColor: const Color(0xff1E1E1E),
-                              label: Text(icon,
-                                  style: const TextStyle(fontSize: 22)),
-                            ))
-                        .toList(),
-                  ),
-          ),
-        ],
-      ),
-    );
-  }
 }
 
-// 3. شاشة المؤقت النشط أثناء العد التنازلي
-class ActiveTimerScreen extends StatefulWidget {
-  final FruitModel fruit;
-  final Function(int) onFinished;
+// ============================================================
+// القائمة الجانبية
+// ============================================================
+class AppDrawer extends StatelessWidget {
+  const AppDrawer({super.key});
 
-  const ActiveTimerScreen(
-      {super.key, required this.fruit, required this.onFinished});
-
-  @override
-  State<ActiveTimerScreen> createState() => _ActiveTimerScreenState();
-}
-
-class _ActiveTimerScreenState extends State<ActiveTimerScreen> {
-  late int remainingSeconds;
-  Timer? _timer;
-  bool isRunning = true;
-
-  @override
-  void initState() {
-    super.initState();
-    remainingSeconds = widget.fruit.minutes * 60;
-    startTimer();
-  }
-
-  void startTimer() {
-    _timer = Timer.periodic(const Duration(seconds: 1), (timer) {
-      if (remainingSeconds > 0) {
-        setState(() {
-          remainingSeconds--;
-        });
-      } else {
-        _timer?.cancel();
-        widget.onFinished(widget.fruit.minutes);
-        _showFinishedDialog();
-      }
-    });
-  }
-
-  void _showFinishedDialog() {
-    showDialog(
-      context: context,
-      barrierDismissible: false,
-      builder: (context) => AlertDialog(
-        backgroundColor: const Color(0xff1E1E1E),
-        title: Text('أحسنت! 🥳 حصلت على ${widget.fruit.icon}'),
-        content: Text(
-            'أتممت جلسة ${widget.fruit.name} بنجاح (${widget.fruit.minutes} دقيقة).'),
-        actions: [
-          TextButton(
-            onPressed: () {
-              Navigator.pop(context); // إغلاق النافذة
-              Navigator.pop(context); // العودة للخروج
-            },
-            child: const Text('رائع',
-                style: TextStyle(color: Color(0xff26C6DA))),
-          ),
-        ],
-      ),
-    );
-  }
-
-  @override
-  void dispose() {
-    _timer?.cancel();
-    super.dispose();
+  void _go(BuildContext context, Widget page) {
+    final nav = Navigator.of(context);
+    nav.pop();
+    nav.push(MaterialPageRoute(builder: (_) => page));
   }
 
   @override
   Widget build(BuildContext context) {
-    int minutes = remainingSeconds ~/ 60;
-    int seconds = remainingSeconds % 60;
-    String timeFormatted =
-        '${minutes.toString().padLeft(2, '0')}:${seconds.toString().padLeft(2, '0')}';
-
-    return Scaffold(
-      appBar: AppBar(
-        title: Text('جلسة ${widget.fruit.name} ${widget.fruit.icon}'),
-        backgroundColor: const Color(0xff1E1E1E),
-      ),
-      body: Center(
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
+    final accent = accentOf(context);
+    return Drawer(
+      child: SafeArea(
+        child: ListView(
+          padding: EdgeInsets.zero,
           children: [
-            Text(widget.fruit.icon, style: const TextStyle(fontSize: 80)),
-            const SizedBox(height: 20),
-            Text(
-              timeFormatted,
-              style: const TextStyle(
-                  fontSize: 60,
-                  fontWeight: FontWeight.bold,
-                  color: Color(0xff26C6DA)),
+            Container(
+              height: 140,
+              alignment: Alignment.center,
+              color: trackColor(context),
+              child: const Text('🥗', style: TextStyle(fontSize: 70)),
             ),
-            const SizedBox(height: 40),
-            Row(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                ElevatedButton(
-                  onPressed: () {
-                    setState(() {
-                      if (isRunning) {
-                        _timer?.cancel();
-                      } else {
-                        startTimer();
-                      }
-                      isRunning = !isRunning;
-                    });
-                  },
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: const Color(0xff1E1E1E),
-                    foregroundColor: const Color(0xff26C6DA),
-                    padding: const EdgeInsets.symmetric(
-                        horizontal: 30, vertical: 12),
+            ListTile(
+              leading: Icon(Icons.checklist, color: accent),
+              title: const Text('المهام'),
+              onTap: () => _go(context, const TasksScreen()),
+            ),
+            ListTile(
+              leading: Icon(Icons.assignment, color: accent),
+              title: const Text('سجل الجلسات'),
+              onTap: () => _go(context, const SessionsScreen()),
+            ),
+            ListTile(
+              leading: Icon(Icons.category, color: accent),
+              title: const Text('أنشطة ومشروعات'),
+              onTap: () => _go(context, const ProjectsScreen()),
+            ),
+            ListTile(
+              leading: Icon(Icons.bar_chart, color: accent),
+              title: const Text('إحصائيات'),
+              onTap: () => _go(context, const StatsScreen()),
+            ),
+            ListTile(
+              leading: Icon(Icons.settings, color: accent),
+              title: const Text('إعدادات'),
+              onTap: () => _go(context, const SettingsScreen()),
+            ),
+            const Divider(),
+            ListTile(
+              leading: Icon(Icons.info_outline, color: accent),
+              title: const Text('عن التطبيق'),
+              onTap: () {
+                Navigator.pop(context);
+                showDialog<void>(
+                  context: context,
+                  builder: (ctx) => AlertDialog(
+                    title: const Text('فروت بومودورو 🥗'),
+                    content: const Text(
+                      'تطبيق لتنظيم وقتك بطريقة البومودورو: اختر فاكهة، ركّز حتى ينتهي الوقت، واجمع نجومك اليومية.\n\nالإصدار 1.0.0',
+                    ),
+                    actions: [
+                      TextButton(
+                        onPressed: () => Navigator.pop(ctx),
+                        child: const Text('حسناً'),
+                      ),
+                    ],
                   ),
-                  child: Text(isRunning ? 'إيقاف مؤقت' : 'استئناف'),
-                ),
-                const SizedBox(width: 15),
-                OutlinedButton(
-                  onPressed: () {
-                    _timer?.cancel();
-                    Navigator.pop(context);
-                  },
-                  style: OutlinedButton.styleFrom(foregroundColor: Colors.red),
-                  child: const Text('إنهاء الجلسة'),
-                ),
-              ],
+                );
+              },
+            ),
+            ListTile(
+              leading: Icon(Icons.share, color: accent),
+              title: const Text('شارك التطبيق'),
+              onTap: () {
+                final messenger = ScaffoldMessenger.of(context);
+                Navigator.pop(context);
+                Clipboard.setData(const ClipboardData(
+                  text:
+                      'جرّب تطبيق فروت بومودورو لتنظيم وقتك وتركيزك 🥗',
+                ));
+                messenger.showSnackBar(
+                  const SnackBar(content: Text('تم نسخ رسالة المشاركة')),
+                );
+              },
             ),
           ],
         ),
       ),
+    );
+  }
+}
+
+// ============================================================
+// شاشة المؤقت
+// ============================================================
+class RingPainter extends CustomPainter {
+  final double progress;
+  final Color color;
+  final Color track;
+  RingPainter(this.progress, this.color, this.track);
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final center = size.center(Offset.zero);
+    final radius = size.width / 2 - 8;
+    final rect = Rect.fromCircle(center: center, radius: radius);
+
+    final base = Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 8
+      ..color = track;
+    canvas.drawCircle(center, radius, base);
+
+    if (progress > 0) {
+      final fg = Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 8
+        ..strokeCap = StrokeCap.round
+        ..color = color;
+      canvas.drawArc(rect, -math.pi / 2, 2 * math.pi * progress, false, fg);
+    }
+  }
+
+  @override
+  bool shouldRepaint(RingPainter old) =>
+      old.progress != progress || old.color != color || old.track != track;
+}
+
+class TimerScreen extends StatefulWidget {
+  final Fruit fruit;
+  const TimerScreen({super.key, required this.fruit});
+
+  @override
+  State<TimerScreen> createState() => _TimerScreenState();
+}
+
+class _TimerScreenState extends State<TimerScreen> {
+  late DateTime _end;
+  late Duration _remaining;
+  Timer? _ticker;
+  bool _paused = false;
+  bool _finished = false;
+  String? _project;
+
+  Duration get _total => Duration(minutes: widget.fruit.minutes);
+
+  @override
+  void initState() {
+    super.initState();
+    _project = app.currentProject;
+    _remaining = _total;
+    _end = DateTime.now().add(_total);
+    _startTicker();
+  }
+
+  @override
+  void dispose() {
+    _ticker?.cancel();
+    super.dispose();
+  }
+
+  void _startTicker() {
+    _ticker?.cancel();
+    _ticker = Timer.periodic(const Duration(milliseconds: 200), (_) {
+      final left = _end.difference(DateTime.now());
+      if (left <= Duration.zero) {
+        _complete();
+      } else {
+        setState(() => _remaining = left);
+      }
+    });
+  }
+
+  void _complete() {
+    _ticker?.cancel();
+    setState(() {
+      _remaining = Duration.zero;
+      _finished = true;
+    });
+    unawaited(_alert());
+  }
+
+  Future<void> _alert() async {
+    for (int i = 0; i < 3; i++) {
+      if (app.vibration) HapticFeedback.vibrate();
+      if (app.sound) SystemSound.play(SystemSoundType.alert);
+      await Future.delayed(const Duration(milliseconds: 700));
+    }
+  }
+
+  void _togglePause() {
+    setState(() {
+      if (_paused) {
+        _end = DateTime.now().add(_remaining);
+        _paused = false;
+        _startTicker();
+      } else {
+        _ticker?.cancel();
+        _paused = true;
+      }
+    });
+  }
+
+  Future<void> _cancel() async {
+    final ok = await confirmDialog(
+      context,
+      'إلغاء الجلسة؟',
+      'لن يتم حفظ هذه الجلسة.',
+      ok: 'إلغاء الجلسة',
+    );
+    if (ok && mounted) Navigator.pop(context);
+  }
+
+  void _save() {
+    app.addSession(Session(
+      fruitName: widget.fruit.name,
+      fruitIcon: widget.fruit.icon,
+      minutes: widget.fruit.minutes,
+      project: _project ?? '',
+      endedAt: DateTime.now(),
+    ));
+    Navigator.pop(context);
+  }
+
+  Future<void> _pickProject() async {
+    final res = await showModalBottomSheet<String>(
+      context: context,
+      builder: (ctx) => SafeArea(
+        child: ListView(
+          shrinkWrap: true,
+          children: [
+            ListTile(
+              title: const Text('بدون نشاط'),
+              onTap: () => Navigator.pop(ctx, ''),
+            ),
+            ...app.projects.map(
+              (p) => ListTile(
+                title: Text(p),
+                onTap: () => Navigator.pop(ctx, p),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+    if (res != null) {
+      setState(() => _project = res.isEmpty ? null : res);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final color = widget.fruit.color;
+    final secs = (_remaining.inMilliseconds / 1000).ceil();
+    final mm = (secs ~/ 60).toString().padLeft(2, '0');
+    final ss = (secs % 60).toString().padLeft(2, '0');
+    final progress =
+        _finished ? 0.0 : _remaining.inMilliseconds / _total.inMilliseconds;
+
+    return Scaffold(
+      body: SafeArea(
+        child: Column(
+          children: [
+            const SizedBox(height: 16),
+            InkWell(
+              borderRadius: BorderRadius.circular(30),
+              onTap: _pickProject,
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
+                decoration: BoxDecoration(
+                  borderRadius: BorderRadius.circular(30),
+                  border: Border.all(color: trackColor(context), width: 2),
+                  color: cardColor(context),
+                ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text(_project ?? 'اختر نشاط / مشروع',
+                        style: const TextStyle(fontSize: 16)),
+                    const SizedBox(width: 8),
+                    const Icon(Icons.arrow_drop_down),
+                  ],
+                ),
+              ),
+            ),
+            Expanded(
+              child: Center(
+                child: SizedBox(
+                  width: 290,
+                  height: 290,
+                  child: CustomPaint(
+                    painter: RingPainter(progress, color, trackColor(context)),
+                    child: Center(
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Text(widget.fruit.icon,
+                              style: const TextStyle(fontSize: 80)),
+                          const SizedBox(height: 14),
+                          Container(
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 18, vertical: 6),
+                            decoration: BoxDecoration(
+                              color: trackColor(context),
+                              borderRadius: BorderRadius.circular(10),
+                            ),
+                            child: Text(
+                              '$mm : $ss',
+                              style: TextStyle(
+                                fontSize: 44,
+                                fontWeight: FontWeight.bold,
+                                color: color,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+            if (!_finished) ...[
+              GestureDetector(
+                onTap: _togglePause,
+                child: Container(
+                  width: 78,
+                  height: 78,
+                  decoration: BoxDecoration(color: color, shape: BoxShape.circle),
+                  child: Icon(
+                    _paused ? Icons.play_arrow : Icons.pause,
+                    color: Colors.white,
+                    size: 40,
+                  ),
+                ),
+              ),
+              const SizedBox(height: 36),
+              OutlinedButton.icon(
+                onPressed: _cancel,
+                icon: const Icon(Icons.close, color: Colors.red),
+                label: const Text('إلغاء / رجوع'),
+              ),
+              const SizedBox(height: 36),
+            ] else ...[
+              Text(
+                'أحسنت! أتممت ${widget.fruit.minutes} دقيقة 🎉',
+                style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w600),
+              ),
+              const SizedBox(height: 16),
+              FilledButton.icon(
+                onPressed: _save,
+                icon: const Icon(Icons.check_circle_outline),
+                label: const Text('حفظ وإنهاء الجلسة'),
+              ),
+              const SizedBox(height: 10),
+              TextButton.icon(
+                onPressed: () => Navigator.pop(context),
+                icon: const Icon(Icons.delete_outline, color: Colors.red),
+                label: const Text('تجاهل الحفظ',
+                    style: TextStyle(color: Colors.red)),
+              ),
+              const SizedBox(height: 30),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+// ============================================================
+// المهام
+// ============================================================
+class TasksScreen extends StatelessWidget {
+  const TasksScreen({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return ListenableBuilder(
+      listenable: app,
+      builder: (context, _) {
+        return Scaffold(
+          appBar: AppBar(title: const Text('المهام')),
+          floatingActionButton: FloatingActionButton(
+            onPressed: () async {
+              final t = await askText(context, 'إضافة مهمة جديدة',
+                  hint: 'اكتب اسم المهمة...');
+              if (t != null) app.addTask(t);
+            },
+            child: const Icon(Icons.add),
+          ),
+          body: app.tasks.isEmpty
+              ? Center(
+                  child: Text('لا توجد مهام بعد',
+                      style: TextStyle(color: subtle(context))),
+                )
+              : ListView.builder(
+                  padding: const EdgeInsets.fromLTRB(16, 16, 16, 90),
+                  itemCount: app.tasks.length,
+                  itemBuilder: (context, i) {
+                    final task = app.tasks[i];
+                    return Dismissible(
+                      key: ObjectKey(task),
+                      background: Container(
+                        margin: const EdgeInsets.only(bottom: 10),
+                        decoration: BoxDecoration(
+                          color: Colors.red,
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                        alignment: Alignment.center,
+                        child: const Icon(Icons.delete, color: Colors.white),
+                      ),
+                      onDismissed: (_) => app.removeTask(task),
+                      child: Container(
+                        margin: const EdgeInsets.only(bottom: 10),
+                        decoration: BoxDecoration(
+                          color: cardColor(context),
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                        child: CheckboxListTile(
+                          value: task.done,
+                          onChanged: (v) => app.toggleTask(task, v ?? false),
+                          title: Text(
+                            task.title,
+                            style: TextStyle(
+                              color: task.done ? subtle(context) : null,
+                              decoration:
+                                  task.done ? TextDecoration.lineThrough : null,
+                            ),
+                          ),
+                        ),
+                      ),
+                    );
+                  },
+                ),
+        );
+      },
+    );
+  }
+}
+
+// ============================================================
+// سجل الجلسات
+// ============================================================
+class SessionsScreen extends StatelessWidget {
+  const SessionsScreen({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return ListenableBuilder(
+      listenable: app,
+      builder: (context, _) {
+        final sorted = List<Session>.from(app.sessions)
+          ..sort((a, b) => b.endedAt.compareTo(a.endedAt));
+
+        final items = <Widget>[];
+        DateTime? lastDay;
+        for (final s in sorted) {
+          final d = dayOf(s.endedAt);
+          if (lastDay == null || d != lastDay) {
+            final total = app.minutesOnDay(d);
+            items.add(Padding(
+              padding: const EdgeInsets.fromLTRB(4, 16, 4, 8),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: Text(arDate(d),
+                        style: TextStyle(
+                            color: accentOf(context),
+                            fontWeight: FontWeight.w600)),
+                  ),
+                  Text(fmtMinutes(total),
+                      style: TextStyle(color: subtle(context))),
+                ],
+              ),
+            ));
+            lastDay = d;
+          }
+          items.add(Container(
+            margin: const EdgeInsets.only(bottom: 8),
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+            decoration: BoxDecoration(
+              color: cardColor(context),
+              borderRadius: BorderRadius.circular(12),
+            ),
+            child: Row(
+              children: [
+                Text(s.fruitIcon, style: const TextStyle(fontSize: 32)),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(projName(s.project),
+                          style: const TextStyle(
+                              fontSize: 16, fontWeight: FontWeight.w600)),
+                      Text('${s.fruitName} • ${hm(s.endedAt)}',
+                          style: TextStyle(
+                              color: subtle(context), fontSize: 13)),
+                    ],
+                  ),
+                ),
+                Text('${s.minutes} د',
+                    style: TextStyle(
+                        color: accentOf(context),
+                        fontSize: 16,
+                        fontWeight: FontWeight.bold)),
+                IconButton(
+                  icon: const Icon(Icons.delete_outline),
+                  onPressed: () async {
+                    final ok = await confirmDialog(
+                        context, 'حذف الجلسة؟', 'سيتم حذف الجلسة من السجل.',
+                        ok: 'حذف');
+                    if (ok) app.removeSession(s);
+                  },
+                ),
+              ],
+            ),
+          ));
+        }
+
+        return Scaffold(
+          appBar: AppBar(title: const Text('سجل الجلسات')),
+          body: sorted.isEmpty
+              ? Center(
+                  child: Text('لا توجد جلسات بعد',
+                      style: TextStyle(color: subtle(context))),
+                )
+              : ListView(
+                  padding: const EdgeInsets.fromLTRB(16, 0, 16, 24),
+                  children: items,
+                ),
+        );
+      },
+    );
+  }
+}
+
+// ============================================================
+// الأنشطة والمشروعات
+// ============================================================
+class ProjectsScreen extends StatelessWidget {
+  const ProjectsScreen({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return ListenableBuilder(
+      listenable: app,
+      builder: (context, _) {
+        return Scaffold(
+          appBar: AppBar(title: const Text('أنشطة ومشروعات')),
+          floatingActionButton: FloatingActionButton(
+            onPressed: () async {
+              final t = await askText(context, 'نشاط / مشروع جديد',
+                  hint: 'مثال: مذاكرة، برمجة...');
+              if (t != null) {
+                final ok = app.addProject(t);
+                if (!ok && context.mounted) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(content: Text('هذا الاسم موجود بالفعل')),
+                  );
+                }
+              }
+            },
+            child: const Icon(Icons.add),
+          ),
+          body: app.projects.isEmpty
+              ? Center(
+                  child: Text('لا توجد أنشطة بعد',
+                      style: TextStyle(color: subtle(context))),
+                )
+              : ListView(
+                  padding: const EdgeInsets.fromLTRB(16, 16, 16, 90),
+                  children: [
+                    Padding(
+                      padding: const EdgeInsets.only(bottom: 12),
+                      child: Text(
+                        'اضغط على نشاط لاختياره للعمل عليه في الجلسات القادمة.',
+                        style: TextStyle(color: subtle(context), fontSize: 13),
+                      ),
+                    ),
+                    ...app.projects.map((p) {
+                      final selected = app.currentProject == p;
+                      return Container(
+                        margin: const EdgeInsets.only(bottom: 10),
+                        decoration: BoxDecoration(
+                          color: cardColor(context),
+                          borderRadius: BorderRadius.circular(12),
+                          border: selected
+                              ? Border.all(color: accentOf(context), width: 2)
+                              : null,
+                        ),
+                        child: ListTile(
+                          onTap: () =>
+                              app.selectProject(selected ? null : p),
+                          leading: Icon(
+                            selected
+                                ? Icons.check_circle
+                                : Icons.circle_outlined,
+                            color: accentOf(context),
+                          ),
+                          title: Text(p),
+                          subtitle: Text(
+                            fmtMinutes(app.projectTotal(p)),
+                            style: TextStyle(color: accentOf(context)),
+                          ),
+                          trailing: PopupMenuButton<String>(
+                            onSelected: (v) async {
+                              if (v == 'rename') {
+                                final t = await askText(
+                                    context, 'تعديل الاسم',
+                                    initial: p);
+                                if (t != null) app.renameProject(p, t);
+                              } else if (v == 'delete') {
+                                final ok = await confirmDialog(
+                                    context,
+                                    'حذف النشاط؟',
+                                    'سيبقى وقته محفوظاً في سجل الجلسات.',
+                                    ok: 'حذف');
+                                if (ok) app.deleteProject(p);
+                              }
+                            },
+                            itemBuilder: (_) => const [
+                              PopupMenuItem(
+                                  value: 'rename', child: Text('تعديل الاسم')),
+                              PopupMenuItem(value: 'delete', child: Text('حذف')),
+                            ],
+                          ),
+                        ),
+                      );
+                    }),
+                  ],
+                ),
+        );
+      },
+    );
+  }
+}
+
+// ============================================================
+// الإحصائيات
+// ============================================================
+class StatCard extends StatelessWidget {
+  final String label;
+  final String value;
+  const StatCard(this.label, this.value, {super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return Expanded(
+      child: Container(
+        margin: const EdgeInsets.symmetric(horizontal: 4),
+        padding: const EdgeInsets.symmetric(vertical: 16, horizontal: 8),
+        decoration: BoxDecoration(
+          color: cardColor(context),
+          borderRadius: BorderRadius.circular(14),
+        ),
+        child: Column(
+          children: [
+            Text(value,
+                style: TextStyle(
+                    fontSize: 22,
+                    fontWeight: FontWeight.bold,
+                    color: accentOf(context))),
+            const SizedBox(height: 4),
+            Text(label,
+                textAlign: TextAlign.center,
+                style: TextStyle(color: subtle(context), fontSize: 13)),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class ProjectBars extends StatelessWidget {
+  final Map<String, int> totals;
+  const ProjectBars(this.totals, {super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    if (totals.isEmpty) {
+      return Padding(
+        padding: const EdgeInsets.all(16),
+        child: Text('لا توجد جلسات في هذه الفترة',
+            style: TextStyle(color: subtle(context))),
+      );
+    }
+    final entries = totals.entries.toList()
+      ..sort((a, b) => b.value.compareTo(a.value));
+    final maxV = entries.first.value;
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: cardColor(context),
+        borderRadius: BorderRadius.circular(14),
+      ),
+      child: Column(
+        children: entries.map((e) {
+          return Padding(
+            padding: const EdgeInsets.only(bottom: 12),
+            child: Column(
+              children: [
+                Row(
+                  children: [
+                    Expanded(child: Text(projName(e.key))),
+                    Text(fmtMinutes(e.value),
+                        style: TextStyle(color: accentOf(context))),
+                  ],
+                ),
+                const SizedBox(height: 6),
+                ClipRRect(
+                  borderRadius: BorderRadius.circular(6),
+                  child: LinearProgressIndicator(
+                    value: e.value / maxV,
+                    minHeight: 8,
+                    backgroundColor: trackColor(context),
+                    color: accentOf(context),
+                  ),
+                ),
+              ],
+            ),
+          );
+        }).toList(),
+      ),
+    );
+  }
+}
+
+class StatsScreen extends StatelessWidget {
+  const StatsScreen({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return DefaultTabController(
+      length: 2,
+      child: Scaffold(
+        appBar: AppBar(
+          title: const Text('إحصائيات'),
+          bottom: const TabBar(
+            tabs: [Tab(text: 'اليوم'), Tab(text: 'الأسبوع')],
+          ),
+        ),
+        body: ListenableBuilder(
+          listenable: app,
+          builder: (context, _) {
+            return TabBarView(
+              children: [
+                _dailyView(context),
+                _weeklyView(context),
+              ],
+            );
+          },
+        ),
+      ),
+    );
+  }
+
+  Widget _title(BuildContext context, String t) => Padding(
+        padding: const EdgeInsets.fromLTRB(4, 20, 4, 10),
+        child: Text(t,
+            style: const TextStyle(fontSize: 17, fontWeight: FontWeight.w600)),
+      );
+
+  Widget _dailyView(BuildContext context) {
+    final now = DateTime.now();
+    final start = dayOf(now);
+    final end = DateTime(now.year, now.month, now.day + 1);
+    final total = app.minutesOnDay(now);
+    final count = app.sessionsOnDay(now).length;
+    final stars = app.starsFor(total);
+
+    return ListView(
+      padding: const EdgeInsets.all(16),
+      children: [
+        Text(arDate(now), style: TextStyle(color: subtle(context))),
+        const SizedBox(height: 12),
+        Row(
+          children: [
+            StatCard('وقت التركيز', fmtMinutes(total)),
+            StatCard('عدد الجلسات', '$count'),
+            StatCard('النجوم', '$stars / 3'),
+          ],
+        ),
+        _title(context, 'حسب النشاط'),
+        ProjectBars(app.projectTotals(start, end)),
+      ],
+    );
+  }
+
+  Widget _weeklyView(BuildContext context) {
+    final now = DateTime.now();
+    // آخر 7 أيام (الأحدث أولاً)
+    final days = List.generate(
+        7, (i) => DateTime(now.year, now.month, now.day - i));
+    final mins = days.map((d) => app.minutesOnDay(d)).toList();
+    final total = mins.fold<int>(0, (a, b) => a + b);
+    final active = mins.where((m) => m > 0).length;
+    final avg7 = (total / 7).round();
+    final avgActive = active == 0 ? 0 : (total / active).round();
+    final maxV = mins.fold<int>(1, (a, b) => b > a ? b : a);
+
+    final from = days.last;
+    final to = DateTime(now.year, now.month, now.day + 1);
+
+    return ListView(
+      padding: const EdgeInsets.all(16),
+      children: [
+        Row(
+          children: [
+            StatCard('إجمالي الأسبوع', fmtMinutes(total)),
+            StatCard('متوسط يومي (7 أيام)', '$avg7 د'),
+            StatCard('متوسط أيام العمل', '$avgActive د'),
+          ],
+        ),
+        _title(context, 'إنجاز آخر 7 أيام'),
+        Container(
+          padding: const EdgeInsets.all(14),
+          decoration: BoxDecoration(
+            color: cardColor(context),
+            borderRadius: BorderRadius.circular(14),
+          ),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.end,
+            children: List.generate(7, (i) {
+              final d = days[i];
+              final m = mins[i];
+              return Expanded(
+                child: Column(
+                  children: [
+                    Text('$m', style: const TextStyle(fontSize: 12)),
+                    const SizedBox(height: 6),
+                    Container(
+                      width: 18,
+                      height: 120,
+                      decoration: BoxDecoration(
+                        color: trackColor(context),
+                        borderRadius: BorderRadius.circular(9),
+                      ),
+                      child: Align(
+                        alignment: Alignment.bottomCenter,
+                        child: FractionallySizedBox(
+                          heightFactor: m / maxV,
+                          child: Container(
+                            decoration: BoxDecoration(
+                              color: accentOf(context),
+                              borderRadius: BorderRadius.circular(9),
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 6),
+                    FittedBox(
+                      fit: BoxFit.scaleDown,
+                      child: Text(_dayNames[d.weekday - 1],
+                          style: TextStyle(
+                              fontSize: 11, color: subtle(context))),
+                    ),
+                    Text('${d.day}/${d.month}',
+                        style:
+                            TextStyle(fontSize: 11, color: subtle(context))),
+                  ],
+                ),
+              );
+            }),
+          ),
+        ),
+        _title(context, 'حسب النشاط (آخر 7 أيام)'),
+        ProjectBars(app.projectTotals(from, to)),
+      ],
+    );
+  }
+}
+
+// ============================================================
+// الإعدادات
+// ============================================================
+class SettingsScreen extends StatelessWidget {
+  const SettingsScreen({super.key});
+
+  Widget _section(String t) => Padding(
+        padding: const EdgeInsets.fromLTRB(4, 20, 4, 8),
+        child: Text(t,
+            style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w600)),
+      );
+
+  @override
+  Widget build(BuildContext context) {
+    return ListenableBuilder(
+      listenable: app,
+      builder: (context, _) {
+        return Scaffold(
+          appBar: AppBar(title: const Text('إعدادات')),
+          body: ListView(
+            padding: const EdgeInsets.all(16),
+            children: [
+              _section('المظهر'),
+              SegmentedButton<int>(
+                segments: const [
+                  ButtonSegment(value: 0, label: Text('تلقائي')),
+                  ButtonSegment(value: 1, label: Text('نهاري')),
+                  ButtonSegment(value: 2, label: Text('ليلي')),
+                ],
+                selected: {app.themeMode},
+                onSelectionChanged: (s) => app.setTheme(s.first),
+              ),
+              _section('حجم الخط (${(app.fontScale * 100).round()}%)'),
+              Slider(
+                value: app.fontScale,
+                min: 0.8,
+                max: 1.4,
+                divisions: 6,
+                label: '${(app.fontScale * 100).round()}%',
+                onChanged: (v) => app.setFontScale(v),
+              ),
+              _section('النجوم'),
+              Text('عدد الدقائق لكل نجمة: ${app.starMinutes} دقيقة',
+                  style: TextStyle(color: subtle(context))),
+              Slider(
+                value: app.starMinutes.toDouble(),
+                min: 30,
+                max: 120,
+                divisions: 6,
+                label: '${app.starMinutes}',
+                onChanged: (v) => app.setStarMinutes(v.round()),
+              ),
+              _section('التنبيه عند انتهاء الجلسة'),
+              SwitchListTile(
+                title: const Text('اهتزاز الهاتف'),
+                value: app.vibration,
+                onChanged: (v) => app.setVibration(v),
+              ),
+              SwitchListTile(
+                title: const Text('صوت التنبيه'),
+                value: app.sound,
+                onChanged: (v) => app.setSound(v),
+              ),
+              _section('البيانات'),
+              OutlinedButton.icon(
+                onPressed: () async {
+                  final ok = await confirmDialog(
+                    context,
+                    'مسح كل البيانات؟',
+                    'سيتم حذف الجلسات والمهام والأنشطة. لا يمكن التراجع.',
+                    ok: 'مسح',
+                  );
+                  if (ok) app.clearAll();
+                },
+                icon: const Icon(Icons.delete_forever, color: Colors.red),
+                label: const Text('مسح كل البيانات',
+                    style: TextStyle(color: Colors.red)),
+              ),
+            ],
+          ),
+        );
+      },
     );
   }
 }
