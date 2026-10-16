@@ -375,7 +375,6 @@ class _HomeScreenState extends State<HomeScreen> {
           const SizedBox(height: 15),
           Expanded(
             child: harvestedBasket.isEmpty
-                .isEmpty // تحسين العرض
                 ? const Center(
                     child: Text('لم تجمع أي فواكه اليوم بعد، ابدأ جلسة تركيز!',
                         style: TextStyle(color: Colors.grey)))
@@ -480,7 +479,7 @@ class _ActiveTimerScreenState extends State<ActiveTimerScreen> {
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            Text(widget.fruit.icon, style: const TextStyle(size: 80)),
+            Text(widget.fruit.icon, style: const TextStyle(fontSize: 80)),
             const SizedBox(height: 20),
             Text(
               timeFormatted,
