@@ -76,6 +76,57 @@ class TaskItem {
       TaskItem(title: j['t'] as String, done: j['d'] as bool);
 }
 
+class Habit {
+  String name;
+  Set<String> days;
+  Habit({required this.name, Set<String>? days}) : days = days ?? <String>{};
+
+  Map<String, dynamic> toJson() => {'n': name, 'd': days.toList()};
+
+  factory Habit.fromJson(Map<String, dynamic> j) => Habit(
+        name: j['n'] as String,
+        days: Set<String>.from(j['d'] as List),
+      );
+}
+
+String dayKey(DateTime d) =>
+    '${d.year}-${d.month.toString().padLeft(2, '0')}-${d.day.toString().padLeft(2, '0')}';
+
+// السلسلة الحالية: أيام متتالية حتى اليوم (أو حتى أمس لو اليوم لم يكتمل بعد)
+int currentStreak(Set<String> days) {
+  final now = DateTime.now();
+  var d = DateTime(now.year, now.month, now.day);
+  if (!days.contains(dayKey(d))) d = DateTime(d.year, d.month, d.day - 1);
+  int n = 0;
+  while (days.contains(dayKey(d))) {
+    n++;
+    d = DateTime(d.year, d.month, d.day - 1);
+  }
+  return n;
+}
+
+// أطول سلسلة أيام متتالية في التاريخ كله
+int bestStreak(Set<String> days) {
+  if (days.isEmpty) return 0;
+  final list = days.map((k) {
+    final p = k.split('-');
+    return DateTime(int.parse(p[0]), int.parse(p[1]), int.parse(p[2]));
+  }).toList()
+    ..sort();
+  int best = 1;
+  int run = 1;
+  for (int i = 1; i < list.length; i++) {
+    final prev = list[i - 1];
+    if (DateTime(prev.year, prev.month, prev.day + 1) == list[i]) {
+      run++;
+    } else {
+      run = 1;
+    }
+    if (run > best) best = run;
+  }
+  return best;
+}
+
 // ============================================================
 // حالة التطبيق + الحفظ
 // ============================================================
@@ -83,6 +134,7 @@ class AppState extends ChangeNotifier {
   List<Session> sessions = [];
   List<String> projects = ['عام'];
   List<TaskItem> tasks = [];
+  List<Habit> habits = [];
   String? currentProject;
 
   int themeMode = 2; // 0 تلقائي، 1 نهاري، 2 ليلي
@@ -109,6 +161,12 @@ class AppState extends ChangeNotifier {
             .map((e) => TaskItem.fromJson(Map<String, dynamic>.from(e as Map)))
             .toList();
       }
+      final h = p.getString('habits');
+      if (h != null) {
+        habits = (jsonDecode(h) as List)
+            .map((e) => Habit.fromJson(Map<String, dynamic>.from(e as Map)))
+            .toList();
+      }
     } catch (_) {
       // بيانات تالفة: نكمل بقوائم فاضية
     }
@@ -126,6 +184,7 @@ class AppState extends ChangeNotifier {
     if (p == null) return;
     p.setString('sessions', jsonEncode(sessions.map((e) => e.toJson()).toList()));
     p.setString('tasks', jsonEncode(tasks.map((e) => e.toJson()).toList()));
+    p.setString('habits', jsonEncode(habits.map((e) => e.toJson()).toList()));
     p.setStringList('projects', projects);
     if (currentProject == null) {
       p.remove('currentProject');
@@ -240,6 +299,35 @@ class AppState extends ChangeNotifier {
     _changed();
   }
 
+  // ---------- العادات والسلسلة ----------
+  Set<String> get focusDays => sessions.map((s) => dayKey(s.endedAt)).toSet();
+
+  bool addHabit(String name) {
+    final n = name.trim();
+    if (n.isEmpty || habits.any((h) => h.name == n)) return false;
+    habits.add(Habit(name: n));
+    _changed();
+    return true;
+  }
+
+  void renameHabit(Habit h, String name) {
+    final n = name.trim();
+    if (n.isEmpty || habits.any((x) => x.name == n)) return;
+    h.name = n;
+    _changed();
+  }
+
+  void deleteHabit(Habit h) {
+    habits.remove(h);
+    _changed();
+  }
+
+  void toggleHabit(Habit h, DateTime day) {
+    final k = dayKey(day);
+    if (!h.days.remove(k)) h.days.add(k);
+    _changed();
+  }
+
   // ---------- الإعدادات ----------
   void setTheme(int v) {
     themeMode = v;
@@ -269,6 +357,7 @@ class AppState extends ChangeNotifier {
   void clearAll() {
     sessions = [];
     tasks = [];
+    habits = [];
     projects = ['عام'];
     currentProject = null;
     _changed();
@@ -519,7 +608,11 @@ class HomeScreen extends StatelessWidget {
           body: Column(
             children: [
               Expanded(
-                child: GridView.count(
+                child: ListView(
+                  children: [
+                GridView.count(
+                  shrinkWrap: true,
+                  physics: const NeverScrollableScrollPhysics(),
                   crossAxisCount: 3,
                   childAspectRatio: 0.95,
                   padding: const EdgeInsets.all(12),
@@ -551,6 +644,10 @@ class HomeScreen extends StatelessWidget {
                       ),
                     );
                   }).toList(),
+                ),
+                const TodayCard(),
+                const SizedBox(height: 12),
+                  ],
                 ),
               ),
               Container(
@@ -643,6 +740,11 @@ class AppDrawer extends StatelessWidget {
               leading: Icon(Icons.checklist, color: accent),
               title: const Text('المهام'),
               onTap: () => _go(context, const TasksScreen()),
+            ),
+            ListTile(
+              leading: Icon(Icons.local_fire_department, color: accent),
+              title: const Text('متعقب العادات'),
+              onTap: () => _go(context, const HabitsScreen()),
             ),
             ListTile(
               leading: Icon(Icons.assignment, color: accent),
@@ -1401,6 +1503,13 @@ class StatsScreen extends StatelessWidget {
             StatCard('النجوم', '$stars / 3'),
           ],
         ),
+        const SizedBox(height: 10),
+        Row(
+          children: [
+            StatCard('السلسلة الحالية', '🔥 ${currentStreak(app.focusDays)} يوم'),
+            StatCard('أطول سلسلة', '🏆 ${bestStreak(app.focusDays)} يوم'),
+          ],
+        ),
         _title(context, 'حسب النشاط'),
         ProjectBars(app.projectTotals(start, end)),
       ],
@@ -1470,110 +1579,4 @@ class StatsScreen extends StatelessWidget {
                       ),
                     ),
                     const SizedBox(height: 6),
-                    FittedBox(
-                      fit: BoxFit.scaleDown,
-                      child: Text(_dayNames[d.weekday - 1],
-                          style: TextStyle(
-                              fontSize: 11, color: subtle(context))),
-                    ),
-                    Text('${d.day}/${d.month}',
-                        style:
-                            TextStyle(fontSize: 11, color: subtle(context))),
-                  ],
-                ),
-              );
-            }),
-          ),
-        ),
-        _title(context, 'حسب النشاط (آخر 7 أيام)'),
-        ProjectBars(app.projectTotals(from, to)),
-      ],
-    );
-  }
-}
-
-// ============================================================
-// الإعدادات
-// ============================================================
-class SettingsScreen extends StatelessWidget {
-  const SettingsScreen({super.key});
-
-  Widget _section(String t) => Padding(
-        padding: const EdgeInsets.fromLTRB(4, 20, 4, 8),
-        child: Text(t,
-            style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w600)),
-      );
-
-  @override
-  Widget build(BuildContext context) {
-    return ListenableBuilder(
-      listenable: app,
-      builder: (context, _) {
-        return Scaffold(
-          appBar: AppBar(title: const Text('إعدادات')),
-          body: ListView(
-            padding: const EdgeInsets.all(16),
-            children: [
-              _section('المظهر'),
-              SegmentedButton<int>(
-                segments: const [
-                  ButtonSegment(value: 0, label: Text('تلقائي')),
-                  ButtonSegment(value: 1, label: Text('نهاري')),
-                  ButtonSegment(value: 2, label: Text('ليلي')),
-                ],
-                selected: {app.themeMode},
-                onSelectionChanged: (s) => app.setTheme(s.first),
-              ),
-              _section('حجم الخط (${(app.fontScale * 100).round()}%)'),
-              Slider(
-                value: app.fontScale,
-                min: 0.8,
-                max: 1.4,
-                divisions: 6,
-                label: '${(app.fontScale * 100).round()}%',
-                onChanged: (v) => app.setFontScale(v),
-              ),
-              _section('النجوم'),
-              Text('عدد الدقائق لكل نجمة: ${app.starMinutes} دقيقة',
-                  style: TextStyle(color: subtle(context))),
-              Slider(
-                value: app.starMinutes.toDouble(),
-                min: 30,
-                max: 120,
-                divisions: 6,
-                label: '${app.starMinutes}',
-                onChanged: (v) => app.setStarMinutes(v.round()),
-              ),
-              _section('التنبيه عند انتهاء الجلسة'),
-              SwitchListTile(
-                title: const Text('اهتزاز الهاتف'),
-                value: app.vibration,
-                onChanged: (v) => app.setVibration(v),
-              ),
-              SwitchListTile(
-                title: const Text('صوت التنبيه'),
-                value: app.sound,
-                onChanged: (v) => app.setSound(v),
-              ),
-              _section('البيانات'),
-              OutlinedButton.icon(
-                onPressed: () async {
-                  final ok = await confirmDialog(
-                    context,
-                    'مسح كل البيانات؟',
-                    'سيتم حذف الجلسات والمهام والأنشطة. لا يمكن التراجع.',
-                    ok: 'مسح',
-                  );
-                  if (ok) app.clearAll();
-                },
-                icon: const Icon(Icons.delete_forever, color: Colors.red),
-                label: const Text('مسح كل البيانات',
-                    style: TextStyle(color: Colors.red)),
-              ),
-            ],
-          ),
-        );
-      },
-    );
-  }
-}
+                    FittedBox
