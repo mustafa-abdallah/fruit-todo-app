@@ -520,7 +520,11 @@ class _TextSheetState extends State<_TextSheet> {
 // ============================================================
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  await app.load();
+  try {
+    await app.load().timeout(const Duration(seconds: 4));
+  } catch (_) {
+    // لو فشل تحميل البيانات نفتح التطبيق على أي حال
+  }
   runApp(const FruitApp());
 }
 
